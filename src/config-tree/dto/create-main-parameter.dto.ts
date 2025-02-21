@@ -6,5 +6,5 @@ export class CreateMainParameterDto {
 
   @IsOptional()
   @IsArray()
-  modules?: { name: string; type: string; level: number; parentName: string }[]; // Модули, которые могут быть добавлены сразу
+  modules?: { name: string; type: string; level: number; parentName: string }[];
 }
