@@ -26,47 +26,30 @@ export class ConfigTreeService {
     const { name, modules } = createMainParameterDto;
 
     let mainParameter = await this.mainParameterRepository.findOne({ where: { name } })
-      ?? await this.mainParameterRepository.save(this.mainParameterRepository.create({ name }));
+      ?? await this.mainParameterRepository.save({ name });
 
     if (!modules?.length) return mainParameter;
 
-    const existingModulesMap = new Map(
+    const existingModules = new Map(
       (await this.connectedModuleRepository.find({ where: { mainParameter } }))
         .map(m => [`${m.name}_${m.level}`, m.id])
     );
 
-    const newModulesSet = new Set<string>();
+    const newModules = new Set<string>();
     const firstLevelNames = new Set<string>();
 
     for (const { name, type, level, parentName } of modules) {
-      if (level === 1) {
-        if (firstLevelNames.has(name)) {
-          throw new BadRequestException(`Модуль с именем "${name}" уже существует на уровне ${level}.`);
-        }
-        firstLevelNames.add(name);
+      if (level === 1 && !firstLevelNames.add(name)) {
+        throw new BadRequestException(`Модуль с именем "${name}" уже существует на уровне ${level}.`);
       }
 
       const moduleKey = `${name}_${level}`;
-      if (existingModulesMap.has(moduleKey) || newModulesSet.has(moduleKey)) {
+      if (existingModules.has(moduleKey) || !newModules.add(moduleKey)) {
         throw new BadRequestException(`Модуль с именем "${name}" уже существует на уровне ${level}.`);
       }
-      newModulesSet.add(moduleKey);
 
-      if (level > 1) {
-        const parentModuleKey = `${parentName}_${level - 1}`;
-        const parentModuleId = existingModulesMap.get(parentModuleKey);
-        if (!parentModuleId) {
-          throw new BadRequestException(`Родительский модуль "${parentName}" для "${name}" на уровне ${level} не найден.`);
-        }
-
-        const parentModulesAtLevel = await this.connectedModuleRepository.find({
-          where: { parent: { id: parentModuleId }, level },
-        });
-
-        const parentNamesAtLevel = parentModulesAtLevel.map(m => m.name);
-        if (parentNamesAtLevel.includes(name)) {
-          throw new BadRequestException(`Модуль с именем "${name}" уже существует на уровне ${level} у родителя "${parentName}".`);
-        }
+      if (level > 1 && !existingModules.has(`${parentName}_${level - 1}`)) {
+        throw new BadRequestException(`Родительский модуль "${parentName}" для "${name}" на уровне ${level} не найден.`);
       }
     }
 
@@ -74,7 +57,7 @@ export class ConfigTreeService {
       modules.map(({ name, type, level, parentName }) =>
         this.connectedModuleRepository.create({
           name, type, level, mainParameter,
-          parent: level > 1 ? { id: existingModulesMap.get(`${parentName}_${level - 1}`) } : null
+          parent: level > 1 ? { id: existingModules.get(`${parentName}_${level - 1}`) } : null
         })
       )
     );
@@ -97,11 +80,7 @@ export class ConfigTreeService {
 
     if (!mainParameters.length) throw new BadRequestException('No matching parameters found');
 
-    const modules: any[] = [];
-
-    for (const mainParameter of mainParameters) {
-      console.log(`Processing mainParameter: ${mainParameter.name}`);
-
+    const modules = await Promise.all(mainParameters.map(async (mainParameter) => {
       const rootModule = await this.connectedModuleRepository.findOne({
         where: { mainParameter, name: In(Object.values(query)), parent: null },
         order: { level: 'DESC' },
@@ -109,27 +88,16 @@ export class ConfigTreeService {
 
       if (!rootModule) {
         console.log(`No root module found for ${mainParameter.name}`);
-        continue;
+        return null;
       }
 
       const tree = await this.getModuleTree(mainParameter, rootModule.id);
-
-      console.log(`Generated tree for ${mainParameter.name}:`, JSON.stringify(tree, null, 2));
-
-      const selectedModules = this.selectModules(tree);
-
-      const moduleGroup: any[] = [];
-
-      for (const module of selectedModules) {
-        moduleGroup.push({ [module.name]: module.type });
-      }
-
-      modules.push(moduleGroup);
-    }
+      return this.selectModules(tree).map(module => ({ [module.name]: module.type }));
+    }));
 
     return {
       adset_id: Math.floor(Math.random() * 100000),
-      modules,
+      modules: modules.filter(Boolean),
     };
   }
 
@@ -148,19 +116,14 @@ export class ConfigTreeService {
 
     if (!modules.length) return [];
 
-    const selectedModule = modules.length === 1
-      ? modules[0]
-      : modules[Math.floor(Math.random() * modules.length)];
-
+    const selectedModule = modules.length === 1 ? modules[0] : modules[Math.floor(Math.random() * modules.length)];
     console.log(`Selected module for parentId ${parentId}:`, selectedModule);
-
-    const selectedModuleTree = await this.getModuleTree(mainParameter, selectedModule.id);
 
     return [{
       name: selectedModule.name,
       type: selectedModule.type,
       probability: 1,
-      children: selectedModuleTree,
+      children: await this.getModuleTree(mainParameter, selectedModule.id),
     }];
   }
 
@@ -191,45 +154,45 @@ export class ConfigTreeService {
    * @returns {Promise<any>} Возвращает объект с ID набора объявлений и модулями для каждого основного параметра.
    * @throws {BadRequestException} Выбрасывает исключение, если не найдены основные параметры.
    */
+
   async getAllAdSets(): Promise<any> {
     const mainParameters = await this.mainParameterRepository.find();
-    if (!mainParameters.length) {
-      throw new BadRequestException('No parameters found');
-    }
+    if (!mainParameters.length) throw new BadRequestException('No parameters found');
 
-    let modules: Record<string, Record<string, any>> = {};
+    const mainParameterIds = mainParameters.map(mp => mp.id);
+    const allModules = await this.connectedModuleRepository.find({
+      where: { mainParameter: In(mainParameterIds) },
+      order: { level: 'DESC', name: 'ASC' },
+      relations: ['mainParameter', 'parent']
+    });
 
-    for (const mainParameter of mainParameters) {
-      console.log(`Processing mainParameter: ${mainParameter.name}`);
+    const modulesByMainParameter = new Map(mainParameters.map(mp => [mp.id, {}]));
 
-      const rootModules = await this.connectedModuleRepository.find({
-        where: { mainParameter, parent: null },
-        order: { level: 'DESC' },
-      });
-
-      if (!rootModules.length) {
-        console.log(`No root modules found for ${mainParameter.name}`);
-        continue;
+    allModules.forEach(module => {
+      if (!module.parent && module.mainParameter) {
+        const moduleHierarchy = this.buildModuleHierarchy(module, allModules);
+        modulesByMainParameter.get(module.mainParameter.id)[module.name] = this.selectModules(moduleHierarchy);
+      } else if (!module.mainParameter) {
+        console.warn(`Module ${module.name} is missing mainParameter`);
       }
-
-      modules[mainParameter.name] = {};
-
-      for (const rootModule of rootModules) {
-        const moduleHierarchy = await this.getModuleHierarchy(mainParameter, rootModule.id);
-
-        console.log(`Generated module hierarchy for ${mainParameter.name}:`, JSON.stringify(moduleHierarchy, null, 2));
-
-        modules[mainParameter.name][rootModule.name] = this.selectModules(moduleHierarchy);
-
-        console.log(`Selected modules for ${mainParameter.name} - ${rootModule.name}:`, modules[mainParameter.name][rootModule.name]);
-      }
-    }
+    });
 
     return {
       adset_id: Math.floor(Math.random() * 100000),
-      modules,
+      modules: Object.fromEntries(mainParameters.map(mp => [mp.name, modulesByMainParameter.get(mp.id)])),
     };
   }
+
+  private buildModuleHierarchy(rootModule: any, allModules: any[]): any[] {
+    return [{
+      name: rootModule.name,
+      type: rootModule.type,
+      children: allModules
+        .filter(m => m.parent?.id === rootModule.id)
+        .map(child => this.buildModuleHierarchy(child, allModules))
+    }];
+  }
+
 
   /**
    * Рекурсивно строит иерархию модулей для основного параметра.
