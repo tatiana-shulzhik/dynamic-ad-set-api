@@ -27,6 +27,20 @@ services:
       - pg
     restart: always
 
+  dynamic-ad-set-api:
+    container_name: dynamic-ad-set-api
+    restart: always
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${PORT}:3000"
+    volumes:
+      - ./:/usr/src/dynamic-ad-set-api
+    depends_on:
+      - pg
+    command: sh -c "npm install && npm run migration:run && npm start"
+
 volumes:
   postgres_data:
   pgadmin_local:

@@ -22,13 +22,13 @@ export class ConfigTreeService {
    * @returns {Promise<MainParameter>} Возвращает основной параметр, созданный или найденный в базе данных.
    * @throws {BadRequestException} Бросает исключение, если модуль с таким именем уже существует или родитель не найден.
    */
-  async create(createMainParameterDto: CreateMainParameterDto): Promise<MainParameter> {
+  async create(createMainParameterDto: CreateMainParameterDto): Promise<{ mainParameter: MainParameter, addedModules: any[] }> {
     const { name, modules } = createMainParameterDto;
 
     let mainParameter = await this.mainParameterRepository.findOne({ where: { name } })
       ?? await this.mainParameterRepository.save({ name });
 
-    if (!modules?.length) return mainParameter;
+    if (!modules?.length) return { mainParameter, addedModules: [] };
 
     const existingModules = new Map(
       (await this.connectedModuleRepository.find({ where: { mainParameter } }))
@@ -53,7 +53,7 @@ export class ConfigTreeService {
       }
     }
 
-    await this.connectedModuleRepository.save(
+    const savedModules = await this.connectedModuleRepository.save(
       modules.map(({ name, type, level, parentName }) =>
         this.connectedModuleRepository.create({
           name, type, level, mainParameter,
@@ -62,8 +62,17 @@ export class ConfigTreeService {
       )
     );
 
-    return mainParameter;
+    return {
+      mainParameter,
+      addedModules: savedModules.map(m => ({
+        id: m.id,
+        name: m.name,
+        level: m.level,
+        parentId: m.parent?.id || null
+      }))
+    };
   }
+
 
   /**
   * Генерирует новый набор объявлений на основе параметров, переданных в запросе.
@@ -83,7 +92,7 @@ export class ConfigTreeService {
     const modules = await Promise.all(mainParameters.map(async (mainParameter) => {
       const rootModule = await this.connectedModuleRepository.findOne({
         where: { mainParameter, name: In(Object.values(query)), parent: null },
-        order: { level: 'DESC' },
+        order: { level: 'ASC' },
       });
 
       if (!rootModule) {
@@ -157,67 +166,61 @@ export class ConfigTreeService {
 
   async getAllAdSets(): Promise<any> {
     const mainParameters = await this.mainParameterRepository.find();
-    if (!mainParameters.length) throw new BadRequestException('No parameters found');
-
-    const mainParameterIds = mainParameters.map(mp => mp.id);
-    const allModules = await this.connectedModuleRepository.find({
-      where: { mainParameter: In(mainParameterIds) },
-      order: { level: 'DESC', name: 'ASC' },
-      relations: ['mainParameter', 'parent']
-    });
-
-    const modulesByMainParameter = new Map(mainParameters.map(mp => [mp.id, {}]));
-
-    allModules.forEach(module => {
-      if (!module.parent && module.mainParameter) {
-        const moduleHierarchy = this.buildModuleHierarchy(module, allModules);
-        modulesByMainParameter.get(module.mainParameter.id)[module.name] = this.selectModules(moduleHierarchy);
-      } else if (!module.mainParameter) {
-        console.warn(`Module ${module.name} is missing mainParameter`);
+    const adsetId = Math.floor(Math.random() * 100000)
+    if (!mainParameters.length) {
+      return {
+        adset_id: adsetId
       }
-    });
+    }
+
+    const modules: Record<string, Record<string, any[]>> = {};
+
+    await Promise.all(
+      mainParameters.map(async (mainParameter) => {
+        const rootModules = await this.connectedModuleRepository.find({
+          where: { mainParameter, parent: null },
+          order: { level: 'ASC' },
+        });
+
+        if (!rootModules.length) {
+          console.log(`No root modules found for ${mainParameter.name}`);
+          return;
+        }
+
+        modules[mainParameter.name] = Object.fromEntries(
+          await Promise.all(
+            rootModules.map(async (rootModule) => {
+              const moduleHierarchy = await this.getModuleHierarchyRecursive(rootModule.id);
+              return [rootModule.name, moduleHierarchy];
+            })
+          )
+        );
+      })
+    );
 
     return {
-      adset_id: Math.floor(Math.random() * 100000),
-      modules: Object.fromEntries(mainParameters.map(mp => [mp.name, modulesByMainParameter.get(mp.id)])),
+      adset_id: adsetId,
+      modules,
     };
   }
 
-  private buildModuleHierarchy(rootModule: any, allModules: any[]): any[] {
-    return [{
-      name: rootModule.name,
-      type: rootModule.type,
-      children: allModules
-        .filter(m => m.parent?.id === rootModule.id)
-        .map(child => this.buildModuleHierarchy(child, allModules))
-    }];
-  }
-
-
   /**
-   * Рекурсивно строит иерархию модулей для основного параметра.
-   * 
-   * @param {MainParameter} mainParameter Основной параметр, к которому привязаны модули.
-   * @param {number | null} parentId ID родительского модуля, от которого строится иерархия.
-   * @returns {Promise<any[]>} Возвращает массив, представляющий иерархию модулей.
+   * Рекурсивно получает иерархию модулей, начиная с указанного moduleId.
+   *
+   * @param {number} moduleId - ID родительского модуля, с которого начинается построение иерархии.
+   * @returns {Promise<any[]>} - Массив объектов, представляющих иерархию модулей, 
+   * где каждый модуль содержит свое имя, тип и вложенные модули (children).
    */
-  private async getModuleHierarchy(
-    mainParameter: MainParameter,
-    parentId: number | null
-  ): Promise<any[]> {
-    const modules = await this.connectedModuleRepository.find({
-      where: parentId ? { mainParameter, parent: { id: parentId } } : { mainParameter, parent: null },
-      order: { name: 'ASC' },
-      relations: ['children'],
+  async getModuleHierarchyRecursive(moduleId: number): Promise<any[]> {
+    const children = await this.connectedModuleRepository.find({
+      where: { parent: { id: moduleId } },
+      order: { level: 'ASC' },
     });
 
-    if (!modules.length) return [];
-
     return Promise.all(
-      modules.map(async (module) => ({
-        name: module.name,
-        type: module.type,
-        children: await this.getModuleHierarchy(mainParameter, module.id),
+      children.map(async (child) => ({
+        [child.name]: child.type,
+        children: await this.getModuleHierarchyRecursive(child.id)
       }))
     );
   }

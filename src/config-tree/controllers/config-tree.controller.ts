@@ -19,7 +19,7 @@ export class ConfigTreeController {
    * @returns {Promise<MainParameter>} - Возвращает созданный основной параметр.
    */
   @Post('create')
-  async create(@Body() createMainParameterDto: CreateMainParameterDto): Promise<MainParameter> {
+  async create(@Body() createMainParameterDto: CreateMainParameterDto): Promise<{ mainParameter: MainParameter, addedModules: any[] }> {
     return this.configTreeService.create(createMainParameterDto);
   }
 
