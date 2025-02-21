@@ -15,6 +15,13 @@ export class ConfigTreeService {
     private readonly connectedModuleRepository: Repository<ConnectedModule>,
   ) { }
 
+  /**
+   * Создание основного параметра с модулями.
+   * Проверяет уникальность модулей на каждом уровне, включая проверку родительских модулей.
+   * @param {CreateMainParameterDto} createMainParameterDto Объект, содержащий имя основного параметра и модули.
+   * @returns {Promise<MainParameter>} Возвращает основной параметр, созданный или найденный в базе данных.
+   * @throws {BadRequestException} Бросает исключение, если модуль с таким именем уже существует или родитель не найден.
+   */
   async create(createMainParameterDto: CreateMainParameterDto): Promise<MainParameter> {
     const { name, modules } = createMainParameterDto;
 
@@ -75,6 +82,14 @@ export class ConfigTreeService {
     return mainParameter;
   }
 
+  /**
+  * Генерирует новый набор объявлений на основе параметров, переданных в запросе.
+  * Процесс включает нахождение основного параметра, выбор корневого модуля, генерацию дерева модулей и случайный выбор модулей.
+  * 
+  * @param {Record<string, string>} query Объект с параметрами запроса, где ключи — это имена параметров, а значения — соответствующие модули.
+  * @returns {Promise<any>} Возвращает объект с adset_id и выбранными модулями.
+  * @throws {BadRequestException} Выбрасывает исключение, если не найдены совпадающие параметры.
+  */
   async generateAdSet(query: Record<string, string>): Promise<any> {
     const mainParameters = await this.mainParameterRepository.find({
       where: { name: In(Object.keys(query)) },
@@ -118,6 +133,13 @@ export class ConfigTreeService {
     };
   }
 
+  /**
+   * Рекурсивно строит дерево модулей, начиная с корневого модуля.
+   * 
+   * @param {MainParameter} mainParameter Основной параметр, к которому привязаны модули.
+   * @param {number | null} parentId ID родительского модуля, от которого строится дерево.
+   * @returns {Promise<any[]>} Возвращает массив, представляющий дерево модулей.
+   */
   private async getModuleTree(mainParameter: MainParameter, parentId: number | null): Promise<any[]> {
     const modules = await this.connectedModuleRepository.find({
       where: { mainParameter, parent: { id: parentId } },
@@ -142,6 +164,12 @@ export class ConfigTreeService {
     }];
   }
 
+  /**
+   * Выбирает модули из дерева модулей.
+   * 
+   * @param {any[]} tree Дерево модулей.
+   * @returns {any[]} Возвращает выбранные модули в виде плоского списка.
+   */
   private selectModules(tree: any[]): any[] {
     const selectedModules: any[] = [];
 
@@ -156,6 +184,13 @@ export class ConfigTreeService {
     return selectedModules;
   }
 
+  /**
+   * Возвращает все наборы объявлений, включая все модули для каждого основного параметра.
+   * Для каждого основного параметра генерирует иерархию модулей и выбирает модули для набора.
+   * 
+   * @returns {Promise<any>} Возвращает объект с ID набора объявлений и модулями для каждого основного параметра.
+   * @throws {BadRequestException} Выбрасывает исключение, если не найдены основные параметры.
+   */
   async getAllAdSets(): Promise<any> {
     const mainParameters = await this.mainParameterRepository.find();
     if (!mainParameters.length) {
@@ -196,6 +231,13 @@ export class ConfigTreeService {
     };
   }
 
+  /**
+   * Рекурсивно строит иерархию модулей для основного параметра.
+   * 
+   * @param {MainParameter} mainParameter Основной параметр, к которому привязаны модули.
+   * @param {number | null} parentId ID родительского модуля, от которого строится иерархия.
+   * @returns {Promise<any[]>} Возвращает массив, представляющий иерархию модулей.
+   */
   private async getModuleHierarchy(
     mainParameter: MainParameter,
     parentId: number | null
