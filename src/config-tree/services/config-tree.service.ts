@@ -1,13 +1,15 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable, BadRequestException, Inject } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { MainParameter } from '../entities/main-parameters.entity';
 import { CreateMainParameterDto } from '../dto/create-main-parameter.dto';
 import { ConnectedModule } from '../entities/connected-module.entity';
-
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import { Cache } from 'cache-manager';
 @Injectable()
 export class ConfigTreeService {
   constructor(
+    @Inject(CACHE_MANAGER) private cacheManager: Cache,
     @InjectRepository(MainParameter)
     private readonly mainParameterRepository: Repository<MainParameter>,
 
@@ -82,7 +84,16 @@ export class ConfigTreeService {
   * @returns {Promise<any>} Возвращает объект с adset_id и выбранными модулями.
   * @throws {BadRequestException} Выбрасывает исключение, если не найдены совпадающие параметры.
   */
+
   async generateAdSet(query: Record<string, string>): Promise<any> {
+    const cacheKey = `adset:${JSON.stringify(query)}`;
+    const cachedData = await this.cacheManager.get(cacheKey);
+
+    if (cachedData) {
+      console.log(`Cache hit for key: ${cacheKey}`);
+      return cachedData;
+    }
+
     const mainParameters = await this.mainParameterRepository.find({
       where: { name: In(Object.keys(query)) },
     });
@@ -104,10 +115,13 @@ export class ConfigTreeService {
       return this.selectModules(tree).map(module => ({ [module.name]: module.type }));
     }));
 
-    return {
+    const result = {
       adset_id: Math.floor(Math.random() * 100000),
       modules: modules.filter(Boolean),
     };
+
+    await this.cacheManager.set(cacheKey, result, 300000); // Кешируем на 5 минут (TTL = 300000 мс)
+    return result;
   }
 
   /**
