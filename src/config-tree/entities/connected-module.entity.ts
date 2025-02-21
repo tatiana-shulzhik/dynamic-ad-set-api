@@ -1,7 +1,9 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, OneToMany, JoinColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, OneToMany, JoinColumn, Index } from 'typeorm';
 import { MainParameter } from './main-parameters.entity';
 
 @Entity('connected_modules')
+@Index('idx_main_parameter_id', ['mainParameter'])
+@Index('idx_parent_id', ['parent'])
 export class ConnectedModule {
   @PrimaryGeneratedColumn()
   id: number;
